@@ -1,0 +1,26 @@
+# Secrets
+.env
+.env.*
+*.key
+*.pem
+
+# Node.js
+node_modules/
+npm-debug.log*
+
+# Python
+venv/
+__pycache__/
+*.pyc
+
+# Redis
+dump.rdb
+
+# PID lock
+*.pid
+
+# OS
+.DS_Store
+
+# Editor
+.vscode/settings.json
