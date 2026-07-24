@@ -22,6 +22,11 @@ export async function getQuote(inputMint, outputMint, amount) {
 }
 
 export async function getSwapTransaction(inputMint, outputMint, amount, quoteResponse) {
+  if (!config.wallet.publicKey) {
+    error('[JUPITER] Cannot create swap transaction: WALLET_PUBLIC_KEY not configured');
+    return null;
+  }
+
   try {
     const resp = await axios.post(`${JUPITER_BASE}/swap`, {
       quoteResponse,
@@ -54,20 +59,5 @@ export async function getTokenMetadata(tokenAddress) {
   } catch (err) {
     error(`[JUPITER] Failed to get token metadata: ${err.message}`);
     return null;
-  }
-}
-
-export async function getProgramAccounts(programAddress) {
-  try {
-    const resp = await axios.post(config.helius.rpcUrl, {
-      jsonrpc: '2.0',
-      id: 1,
-      method: 'getProgramAccounts',
-      params: [programAddress, { encoding: 'jsonParsed' }],
-    });
-    return resp.data?.result || [];
-  } catch (err) {
-    error(`[JUPITER] Failed to get program accounts: ${err.message}`);
-    return [];
   }
 }

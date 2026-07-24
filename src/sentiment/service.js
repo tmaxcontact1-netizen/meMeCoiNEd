@@ -1,10 +1,8 @@
 import { log, error, debug } from '../shared/logger.js';
-import { getState, setState, getList, subscribe, publish } from '../shared/redis.js';
+import { getState, setState, getList, publish } from '../shared/redis.js';
 import * as reddit from './reddit.js';
 import * as twitter from './twitter.js';
 import * as discord from './discord.js';
-import * as telegram from './telegram.py';
-import config from '../config/index.js';
 
 let aggregationInterval = null;
 let listenerActive = false;
@@ -25,14 +23,10 @@ function extractCashtags(text) {
   return [...new Set(matches)].map(m => m.substring(1));
 }
 
-function normalizeAddress(text) {
-  if (!text) return [];
-  const matches = text.match(/[A-HJ-NP-Za-km-z1-9]{32,44}/g) || [];
-  return [...new Set(matches)];
-}
-
 function calculateSentimentScore(mentions) {
-  if (!mentions || mentions.length === 0) return 0;
+  if (!mentions || mentions.length === 0) {
+    return { score: 0, positive: 0, negative: 0, neutral: 0, total: 0 };
+  }
 
   let positive = 0;
   let negative = 0;
@@ -84,111 +78,104 @@ function aggregateBySource(mentions) {
   return bySource;
 }
 
+function processMentions(mentions, cashtagData, addressData) {
+  for (const m of mentions) {
+    const text = m.text || m.body || m.title || '';
+    const cashtags = extractCashtags(text);
+
+    for (const tag of cashtags) {
+      const key = tag.startsWith('$') ? tag.substring(1) : tag;
+      if (!cashtagData[key]) cashtagData[key] = [];
+      cashtagData[key].push(m);
+    }
+
+    if (m.addresses) {
+      for (const addr of m.addresses) {
+        if (!addressData[addr]) addressData[addr] = [];
+        addressData[addr].push(m);
+      }
+    }
+  }
+}
+
+function buildScoreEntry(identifier, identifierKey, mentions) {
+  const analysis = calculateSentimentScore(mentions);
+  const bySource = aggregateBySource(mentions);
+  const velocity = mentions.length;
+
+  return {
+    [identifierKey]: identifier,
+    score: analysis.score,
+    breakdown: bySource,
+    velocity,
+    positive: analysis.positive,
+    negative: analysis.negative,
+    neutral: analysis.neutral,
+    total: analysis.total,
+    updatedAt: Date.now(),
+  };
+}
+
 export async function processSentimentData() {
   try {
     const cashtagData = {};
     const addressData = {};
     const globalMentions = [];
 
-    // Collect from all sources
-    const subreddits = ['CryptoCurrency', 'Solana', 'CryptoMoonShots'];
-    const twitterTerms = ['$SOL', 'memecoin', 'pumpfun'];
-
-    for (const sub of subreddits) {
+    // --- REDDIT ---
+    const redditSubs = await getState('config:reddit') || ['CryptoCurrency', 'Solana', 'CryptoMoonShots'];
+    for (const sub of redditSubs) {
       const data = await reddit.getRedditSentiment(sub);
       if (data?.length > 0) {
         globalMentions.push(...data);
-        for (const m of data) {
-          const cashtags = extractCashtags(m.title + ' ' + m.body);
-          for (const tag of cashtags) {
-            if (!cashtagData[tag]) cashtagData[tag] = [];
-            cashtagData[tag].push(m);
-          }
-        }
+        processMentions(data, cashtagData, addressData);
       }
     }
 
+    // --- TWITTER ---
+    const twitterTerms = ['$SOL', 'memecoin', 'pumpfun'];
     for (const term of twitterTerms) {
-      const cleanTag = term.startsWith('$') ? term.substring(1) : term;
       const data = await twitter.getTwitterSentiment(term);
       if (data?.length > 0) {
         globalMentions.push(...data);
-        for (const m of data) {
-          const cashtags = extractCashtags(m.text);
-          for (const tag of cashtags) {
-            const key = tag.startsWith('$') ? tag.substring(1) : tag;
-            if (!cashtagData[key]) cashtagData[key] = [];
-            cashtagData[key].push(m);
-          }
-        }
+        processMentions(data, cashtagData, addressData);
       }
     }
 
-    // Process Telegram mentions
+    // --- TELEGRAM ---
     const telegramMentions = await getList('sentiment:telegram:mentions');
     if (telegramMentions.length > 0) {
       globalMentions.push(...telegramMentions);
-      for (const m of telegramMentions) {
-        if (m.cashtags) {
-          for (const tag of m.cashtags) {
-            const key = tag.startsWith('$') ? tag.substring(1) : tag;
-            if (!cashtagData[key]) cashtagData[key] = [];
-            cashtagData[key].push(m);
-          }
-        }
-        if (m.addresses) {
-          for (const addr of m.addresses) {
-            if (!addressData[addr]) addressData[addr] = [];
-            addressData[addr].push(m);
-          }
-        }
+      processMentions(telegramMentions, cashtagData, addressData);
+    }
+
+    // --- DISCORD ---
+    const discordServers = await getState('config:discord') || [];
+    for (const server of discordServers) {
+      const serverId = server.id || server;
+      const data = await discord.getDiscordSentiment(serverId);
+      if (data?.length > 0) {
+        globalMentions.push(...data);
+        processMentions(data, cashtagData, addressData);
       }
     }
 
-    // Calculate scores for each cashtag/address
+    // --- BUILD SCORES ---
     const scores = {};
 
     for (const [tag, mentions] of Object.entries(cashtagData)) {
-      const analysis = calculateSentimentScore(mentions);
-      const bySource = aggregateBySource(mentions);
-      const velocity = mentions.length;
-
-      scores[`$${tag}`] = {
-        cashtag: `$${tag}`,
-        score: analysis.score,
-        breakdown: bySource,
-        velocity,
-        positive: analysis.positive,
-        negative: analysis.negative,
-        neutral: analysis.neutral,
-        total: analysis.total,
-        updatedAt: Date.now(),
-      };
+      scores[`$${tag}`] = buildScoreEntry(`$${tag}`, 'cashtag', mentions);
     }
 
     for (const [addr, mentions] of Object.entries(addressData)) {
-      const analysis = calculateSentimentScore(mentions);
-      const bySource = aggregateBySource(mentions);
-      const velocity = mentions.length;
-
-      scores[addr] = {
-        address: addr,
-        score: analysis.score,
-        breakdown: bySource,
-        velocity,
-        positive: analysis.positive,
-        negative: analysis.negative,
-        neutral: analysis.neutral,
-        total: analysis.total,
-        updatedAt: Date.now(),
-      };
+      scores[addr] = buildScoreEntry(addr, 'address', mentions);
     }
 
     // Store aggregated data
     await setState('sentiment:scores', scores, 300);
     await setState('sentiment:global', globalMentions.slice(-1000), 300);
 
-    // Publish updates
+    // Publish buzz alerts
     const highScoring = Object.values(scores).filter(s => s.score >= 0.5 && s.velocity >= 10);
     if (highScoring.length > 0) {
       await publish('sentiment:buzz', highScoring);
@@ -204,7 +191,7 @@ export async function processSentimentData() {
   }
 }
 
-export async function startAggregationLoop() {
+export async function startSentimentAggregation() {
   if (aggregationInterval) {
     log('[SENTIMENT] Already running');
     return false;
@@ -213,10 +200,8 @@ export async function startAggregationLoop() {
   const profile = await getState('profiles:active');
   const checkInterval = profile?.intervals?.marketData || 3000;
 
-  // Initial run
   await processSentimentData();
 
-  // Continuous loop
   aggregationInterval = setInterval(async () => {
     await processSentimentData();
   }, Math.max(checkInterval, 60000));
@@ -226,10 +211,21 @@ export async function startAggregationLoop() {
   return true;
 }
 
+export async function startRedditPolling(subreddits) {
+  return await reddit.startRedditPolling(subreddits);
+}
+
+export async function startTwitterStream(terms) {
+  return await twitter.startTwitterStream(terms);
+}
+
+export async function startDiscordListening(servers) {
+  return await discord.startDiscordListening(servers);
+}
+
 export async function getSentimentScore(identifier) {
   const scores = await getState('sentiment:scores');
   const key = identifier.startsWith('$') ? identifier.substring(1) : identifier;
-  
   return scores?.[identifier] || scores?.[`$${key}`] || scores?.[key] || null;
 }
 
@@ -242,11 +238,23 @@ export async function getBuzzingTokens(threshold = 0.5, minVelocity = 10) {
   return Object.values(scores).filter(s => s.score >= threshold && s.velocity >= minVelocity);
 }
 
-export async function stopAggregation() {
+export function stopAggregation() {
   listenerActive = false;
   if (aggregationInterval) {
     clearInterval(aggregationInterval);
     aggregationInterval = null;
   }
   log('[SENTIMENT] Stopped');
+}
+
+export function stopRedditPolling() {
+  reddit.stopRedditPolling();
+}
+
+export function stopTwitterStream() {
+  twitter.stopTwitterStream();
+}
+
+export function stopDiscordListening() {
+  discord.stopDiscordListening();
 }

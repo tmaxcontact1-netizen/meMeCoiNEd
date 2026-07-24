@@ -6,7 +6,7 @@ import config from '../config/index.js';
 
 const PUMPFUN_API = 'https://api.pump.fun';
 let ws = null;
-let discoveryInterval = null;
+let pollingInterval = null;
 
 export function startWebSocketListener(callback) {
   try {
@@ -29,7 +29,7 @@ export function startWebSocketListener(callback) {
 
     ws.on('close', () => {
       log('[PUMP.FUN] WebSocket disconnected, reconnecting in 5s...');
-      setTimeout(startWebSocketListener, 5000);
+      setTimeout(() => startWebSocketListener(callback), 5000);
     });
 
     ws.on('error', (err) => {
@@ -65,14 +65,32 @@ export async function getRecentLaunches(limit = 50) {
   }
 }
 
+export function startPollingFallback(callback) {
+  if (pollingInterval) {
+    log('[PUMP.FUN] Polling already running');
+    return false;
+  }
+
+  pollingInterval = setInterval(async () => {
+    const launches = await getRecentLaunches(30);
+    if (launches.length > 0 && callback) {
+      callback(launches);
+    }
+  }, 30000);
+
+  log('[PUMP.FUN] Started polling fallback (30s interval)');
+  return true;
+}
+
 export function stopWebSocketListener() {
   if (ws) {
     ws.close();
     ws = null;
     log('[PUMP.FUN] WebSocket stopped');
   }
-  if (discoveryInterval) {
-    clearInterval(discoveryInterval);
-    discoveryInterval = null;
+  if (pollingInterval) {
+    clearInterval(pollingInterval);
+    pollingInterval = null;
+    log('[PUMP.FUN] Polling stopped');
   }
 }

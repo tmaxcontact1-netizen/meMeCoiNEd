@@ -1,14 +1,12 @@
 import { log, error, debug } from './shared/logger.js';
-import { connectRedis, disconnectRedis, getState, setState, publish } from './shared/redis.js';
+import { connectRedis, disconnectRedis, getState, setState, publish, subscribe } from './shared/redis.js';
 import config from './config/index.js';
 import { validateConfig } from './config/index.js';
 import { startDashboard } from './dashboard/server.js';
-import * as telegramSentiment from './sentiment/telegram.py';
+import fs from 'fs';
 
 // PID lock to prevent duplicate instances
 const PID_FILE = '/home/tmax/meMeCoiNEd_v2/bot.pid';
-const fs = await import('fs');
-const path = await import('path');
 
 async function acquirePidLock() {
   if (fs.existsSync(PID_FILE)) {
@@ -133,7 +131,8 @@ async function initializeDefaultProfiles() {
     // Set active profile to scalping if none selected
     const activeProfile = await getState('profiles:active');
     if (!activeProfile) {
-      await setState('profiles:active', (await getState('profiles:scalping')));
+      const scalping = await getState('profiles:scalping');
+      await setState('profiles:active', scalping);
       log('[BOOT] Set active profile to scalping');
     }
     
@@ -193,35 +192,66 @@ async function bootServices(selectedServices = []) {
       }
     }
     
-    // Import and start other services
-    const { startExecutionListener } = await import('./execution/service.js');
+    // Import and start services
+    const { initExecution, startExecutionListener } = await import('./execution/service.js');
     const { startDiscoveryLoop } = await import('./discovery/service.js');
-    const { startRiskMonitoring } = await import('./risk-manager/service.js');
-    const { startRugCheckListener } = await import('./rug-check/service.js');
-    const { startSentimentAggregation } = await import('./sentiment/service.js');
+    const { initRiskManager, startRiskMonitoring } = await import('./risk-manager/service.js');
+    const { initRugCheck, startRugCheckListener } = await import('./rug-check/service.js');
+    const { initSentiment, startSentimentAggregation, startRedditPolling, startTwitterStream, startDiscordListening } = await import('./sentiment/service.js');
     
-    const serviceStarters = {
-      'execution-listener': startExecutionListener,
-      'discovery': startDiscoveryLoop,
-      'risk': startRiskMonitoring,
-      'rug-check': startRugCheckListener,
-      'sentiment': startSentimentAggregation,
-    };
+    // Initialize all services
+    await initExecution();
+    await initRiskManager();
+    await initRugCheck();
+    await initSentiment();
     
+    // Start each requested service
     for (const service of selectedServices) {
-      if (service === 'telegram') continue; // Already handled
-      
-      const starter = serviceStarters[service];
-      if (starter) {
-        try {
-          const started = await starter();
-          bootStatus.services[service] = started ? 'online' : 'failed';
-          log(`[BOOT] Service '${service}' ${started ? 'started' : 'failed to start'}`);
-        } catch (err) {
-          bootStatus.services[service] = 'error';
-          bootStatus.errors.push(`Service '${service}' failed: ${err.message}`);
-          error(`[BOOT] Service '${service}' error:`, err);
+      switch (service) {
+        case 'execution-listener': {
+          const started = await startExecutionListener();
+          bootStatus.services['execution-listener'] = started ? 'online' : 'failed';
+          break;
         }
+        case 'discovery': {
+          const started = await startDiscoveryLoop();
+          bootStatus.services.discovery = started ? 'online' : 'failed';
+          break;
+        }
+        case 'risk': {
+          const started = await startRiskMonitoring();
+          bootStatus.services.risk = started ? 'online' : 'failed';
+          break;
+        }
+        case 'rug-check': {
+          const started = await startRugCheckListener();
+          bootStatus.services['rug-check'] = started ? 'online' : 'failed';
+          break;
+        }
+        case 'sentiment': {
+          const started = await startSentimentAggregation();
+          bootStatus.services.sentiment = started ? 'online' : 'failed';
+          
+          // Start polling for each sentiment source if configured
+          if (config.reddit.active) {
+            const redditSubs = await getState('config:reddit');
+            await startRedditPolling(redditSubs);
+            log('[BOOT] Reddit polling started');
+          }
+          if (config.twitter.active) {
+            const twitterTerms = ['$SOL', 'memecoin', 'pumpfun'];
+            await startTwitterStream(twitterTerms);
+            log('[BOOT] Twitter streaming started');
+          }
+          if (config.discord.active) {
+            const discordServers = await getState('config:discord');
+            await startDiscordListening(discordServers);
+            log('[BOOT] Discord listening started');
+          }
+          break;
+        }
+        default:
+          bootStatus.services[service] = { status: 'unknown', message: `Unknown service: ${service}` };
       }
     }
     

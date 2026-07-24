@@ -1,15 +1,13 @@
 import { log, error, debug } from '../shared/logger.js';
 import { setState, getState, getList, publish } from '../shared/redis.js';
-import * as dexscreener from './dexscreener.js';
-import * as birdeye from './birdeye.js';
-import * as pumpfun from './pumpfun.js';
-import * as jupiter from './jupiter.js';
+import * as dexscreener from '../market-data/dexscreener.js';
+import * as birdeye from '../market-data/birdeye.js';
+import * as pumpfun from '../market-data/pumpfun.js';
 import { normalizeToken, calculateVelocity, filterByProfile, rankByScore } from './normalizer.js';
 
 let discoveryInterval = null;
 let trendingInterval = null;
 let discoveredTokens = [];
-let monitoredProfiles = [];
 
 async function collectFromSources() {
   const results = {

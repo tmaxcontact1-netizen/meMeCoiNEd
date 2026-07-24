@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { log, error } from '../shared/logger.js';
-import { setState } from '../shared/redis.js';
+import { setState, getState } from '../shared/redis.js';
 import config from '../config/index.js';
 
 const TWITTER_BASE = 'https://api.twitter.com/2';

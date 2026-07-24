@@ -16,6 +16,16 @@ async function reportHealth(status, message = '') {
   await publish('service:health', current);
 }
 
+export async function initRugCheck() {
+  try {
+    log('[RUG-CHECK] Initialized');
+    return true;
+  } catch (err) {
+    error('[RUG-CHECK] Init failed:', err.message);
+    return false;
+  }
+}
+
 export async function checkTokenSafety(tokenAddress) {
   try {
     const cached = await getState(`rugcheck:${tokenAddress}`);

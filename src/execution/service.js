@@ -1,10 +1,9 @@
-import axios from 'axios';
 import { log, error, debug } from '../shared/logger.js';
-import { getState, setState, deleteKey, getList, addToList, publish, subscribe } from '../shared/redis.js';
+import { getState, setState, deleteKey, addToList, publish, subscribe } from '../shared/redis.js';
 import { getCurrentPrice } from '../market-data/dexscreener.js';
+import { checkTokenSafety } from '../rug-check/service.js';
 import config from '../config/index.js';
 
-const SOLANA_RPC = config.helius.rpcUrl;
 const POSITION_PREFIX = 'position:';
 let listenerActive = false;
 let healthInterval = null;
@@ -67,6 +66,15 @@ export async function startExecutionListener() {
       // Check if already holding
       const existing = await getState(`${POSITION_PREFIX}${token.mint}`);
       if (existing) continue;
+
+      // Rug check before buying
+      if (!config.paperTrading) {
+        const safety = await checkTokenSafety(token.mint);
+        if (!safety || !safety.safe) {
+          debug(`[EXECUTION] Skipped unsafe token ${token.mint}: ${safety?.risks?.[0] || 'unknown risk'}`);
+          continue;
+        }
+      }
 
       // Execute buy
       const cash = await getState('portfolio:cash');

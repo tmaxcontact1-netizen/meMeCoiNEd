@@ -1,7 +1,6 @@
 import { log, error, debug } from '../shared/logger.js';
 import { getState, setState } from '../shared/redis.js';
-import { sellToken, getAllPositions } from '../execution/service.js';
-import { getCurrentPrice } from '../market-data/dexscreener.js';
+import { sellToken, getAllPositions, getPortfolioSummary } from '../execution/service.js';
 
 let monitoringInterval = null;
 let listenerActive = false;
@@ -17,7 +16,8 @@ export async function initRiskManager() {
 }
 
 async function checkPositionStopLoss(position, currentPrice) {
-  const { risk } = await getState('profiles:active') || { risk: {} };
+  const profile = await getState('profiles:active') || { risk: {} };
+  const risk = profile.risk || {};
   const hardStop = position.stopLoss || 0;
   const trailingStop = position.trailingStop || 0;
 
@@ -99,81 +99,6 @@ export async function startRiskMonitoring() {
   listenerActive = true;
   log(`[RISK] Started position monitoring (${checkInterval}ms interval)`);
   return true;
-}
-
-export async function checkConcurrentPositionLimit() {
-  const profile = await getState('profiles:active');
-  const maxPositions = profile?.risk?.maxConcurrentPositions || 20;
-  const positionKeys = await getState('portfolio:positionKeys') || [];
-
-  if (positionKeys.length >= maxPositions) {
-    debug(`[RISK] Position limit reached: ${positionKeys.length}/${maxPositions}`);
-    return false;
-  }
-
-  return true;
-}
-
-export async function enforceLiquidityThreshold(tokenAddress) {
-  // This would ideally be called before buying
-  // For now, just a placeholder that returns true
-  // Full implementation would fetch pair data from dexscreener
-  
-  return true;
-}
-
-export async function calculatePositionSize(tokenAddress, targetPercentage) {
-  const portfolio = await getPortfolioSummary();
-  const availableCash = portfolio.cash;
-  const riskConfig = (await getState('profiles:active'))?.risk || {};
-  
-  const maxAllowed = availableCash * (targetPercentage || riskConfig.maxPositionPct || 0.10);
-  
-  return {
-    availableCash,
-    maxUsd: maxAllowed,
-    percentage: targetPercentage || (maxAllowed / availableCash) * 100,
-  };
-}
-
-export async function getPortfolioSummary() {
-  const cash = await getState('portfolio:cash') || 0;
-  const positions = await getAllPositions();
-  const positionsValue = positions.reduce((sum, p) => sum + (p.currentValue || 0), 0);
-  const totalValue = cash + positionsValue;
-  const totalCost = positions.reduce((sum, p) => sum + p.costUsd, 0);
-  const unrealizedPnl = positionsValue - totalCost;
-
-  return {
-    cash,
-    positionsValue,
-    totalValue,
-    positionCount: positions.length,
-    unrealizedPnl,
-    unrealizedPnlPct: totalCost > 0 ? (unrealizedPnl / totalCost) * 100 : 0,
-  };
-}
-
-export async function updateTrailingStops() {
-  const positions = await getAllPositions();
-  const { risk } = await getState('profiles:active') || { risk: {} };
-  const trailingStopPct = risk.trailingStopPct || 0.10;
-
-  for (const pos of positions) {
-    const currentPrice = await getCurrentPrice(pos.address);
-    if (!currentPrice || currentPrice <= 0) continue;
-
-    if (currentPrice > pos.highestPrice) {
-      const updated = {
-        ...pos,
-        highestPrice: currentPrice,
-        trailingStop: currentPrice * (1 - trailingStopPct),
-      };
-      
-      await setState(`position:${pos.address}`, updated);
-      debug(`[RISK] Updated trailing stop for ${pos.address}: $${updated.trailingStop.toFixed(6)}`);
-    }
-  }
 }
 
 export function stopRiskManager() {
